@@ -10,6 +10,7 @@
 (define-constant ERR-INSUFFICIENT-COLLATERAL (err u107))
 (define-constant ERR-POSITION-NOT-FOUND (err u108))
 (define-constant ERR-LIQUIDATION-THRESHOLD-NOT-MET (err u109))
+(define-constant ERR-NO-REWARDS (err u110))
 
 (define-data-var token-name (string-ascii 32) "Synthetic Gold Token")
 (define-data-var token-symbol (string-ascii 10) "sGOLD")
@@ -22,9 +23,12 @@
 (define-data-var oracle-price uint u0)
 (define-data-var oracle-timestamp uint u0)
 (define-data-var max-price-age uint u3600)
+(define-data-var reward-rate-per-block uint u1)
+(define-data-var total-rewards-distributed uint u0)
 
 (define-map token-balances principal uint)
 (define-map token-supplies principal uint)
+(define-map user-reward-checkpoint {user: principal, block: uint} uint)
 
 (define-map collateral-positions 
     principal 
@@ -98,13 +102,29 @@
 )
 
 (define-read-only (calculate-max-synthetic (stx-amount uint))
-    (let 
+    (let
         (
             (stx-value (* stx-amount (var-get oracle-price)))
             (max-debt (* stx-value u100))
             (required-ratio (var-get min-collateral-ratio))
         )
         (/ max-debt required-ratio)
+    )
+)
+
+(define-read-only (calculate-accrued-rewards (user principal))
+    (match (map-get? collateral-positions user)
+        position
+        (let
+            (
+                (blocks-elapsed (- stacks-block-height (get last-update position)))
+                (collateral-amount (get stx-collateral position))
+                (reward-rate (var-get reward-rate-per-block))
+                (accrued (* (* blocks-elapsed collateral-amount) reward-rate))
+            )
+            (some accrued)
+        )
+        none
     )
 )
 
@@ -252,7 +272,7 @@
 )
 
 (define-public (liquidate (user principal) (debt-to-cover uint))
-    (let 
+    (let
         (
             (position (unwrap! (map-get? collateral-positions user) ERR-POSITION-NOT-FOUND))
             (user-debt (get synthetic-debt position))
@@ -264,8 +284,8 @@
         (asserts! (> debt-to-cover u0) ERR-INVALID-AMOUNT)
         (asserts! (<= debt-to-cover user-debt) ERR-INVALID-AMOUNT)
         (asserts! (>= liquidator-balance debt-to-cover) ERR-INSUFFICIENT-BALANCE)
-        
-        (let 
+
+        (let
             (
                 (collateral-to-seize (/ (* debt-to-cover user-collateral) user-debt))
                 (liquidation-bonus (/ collateral-to-seize u10))
@@ -282,6 +302,36 @@
             (try! (as-contract (stx-transfer? total-collateral-reward tx-sender tx-sender)))
             (ok total-collateral-reward)
         )
+    )
+)
+
+(define-public (claim-rewards)
+    (let
+        (
+            (accrued-rewards (unwrap! (calculate-accrued-rewards tx-sender) ERR-NO-REWARDS))
+            (position (unwrap! (map-get? collateral-positions tx-sender) ERR-POSITION-NOT-FOUND))
+        )
+        (asserts! (> accrued-rewards u0) ERR-NO-REWARDS)
+        (map-set token-balances tx-sender (+ (get-balance tx-sender) accrued-rewards))
+        (var-set total-supply (+ (var-get total-supply) accrued-rewards))
+        (map-set collateral-positions tx-sender
+            {
+                stx-collateral: (get stx-collateral position),
+                synthetic-debt: (get synthetic-debt position),
+                last-update: stacks-block-height
+            }
+        )
+        (var-set total-rewards-distributed (+ (var-get total-rewards-distributed) accrued-rewards))
+        (print {action: "claim-rewards", user: tx-sender, amount: accrued-rewards})
+        (ok accrued-rewards)
+    )
+)
+
+(define-public (update-reward-rate (new-rate uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-OWNER-ONLY)
+        (var-set reward-rate-per-block new-rate)
+        (ok true)
     )
 )
 
