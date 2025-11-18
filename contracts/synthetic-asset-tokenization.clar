@@ -368,3 +368,12 @@
         (ok true)
     )
 )
+
+(define-public (mint-and-transfer (amount uint) (recipient principal) (memo (optional (buff 34))))
+    (begin
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (try! (mint-synthetic amount))
+        (try! (transfer amount tx-sender recipient memo))
+        (ok true)
+    )
+)
