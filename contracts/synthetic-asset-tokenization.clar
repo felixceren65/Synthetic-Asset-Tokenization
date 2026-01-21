@@ -11,6 +11,7 @@
 (define-constant ERR-POSITION-NOT-FOUND (err u108))
 (define-constant ERR-LIQUIDATION-THRESHOLD-NOT-MET (err u109))
 (define-constant ERR-NO-REWARDS (err u110))
+(define-constant ERR-INSUFFICIENT-RESERVE (err u111))
 
 (define-data-var token-name (string-ascii 32) "Synthetic Gold Token")
 (define-data-var token-symbol (string-ascii 10) "sGOLD")
@@ -25,6 +26,7 @@
 (define-data-var max-price-age uint u3600)
 (define-data-var reward-rate-per-block uint u1)
 (define-data-var total-rewards-distributed uint u0)
+(define-data-var psm-reserve uint u0)
 
 (define-map token-balances principal uint)
 (define-map token-supplies principal uint)
@@ -375,5 +377,47 @@
         (try! (mint-synthetic amount))
         (try! (transfer amount tx-sender recipient memo))
         (ok true)
+    )
+)
+
+(define-read-only (get-psm-reserve)
+    (var-get psm-reserve)
+)
+
+(define-public (swap-stx-for-synthetic (stx-amount uint))
+    (let
+        (
+            (price (var-get oracle-price))
+            (token-amount (/ (* stx-amount price) u1000000))
+        )
+        (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
+        (asserts! (> price u0) ERR-INVALID-ORACLE)
+        (asserts! (> stx-amount u0) ERR-INVALID-AMOUNT)
+        
+        (try! (stx-transfer? stx-amount tx-sender (as-contract tx-sender)))
+        (unwrap-panic (mint-tokens tx-sender token-amount))
+        (var-set psm-reserve (+ (var-get psm-reserve) stx-amount))
+        (print {action: "swap-stx-for-synthetic", sender: tx-sender, stx-amount: stx-amount, token-amount: token-amount})
+        (ok token-amount)
+    )
+)
+
+(define-public (swap-synthetic-for-stx (token-amount uint))
+    (let
+        (
+            (price (var-get oracle-price))
+            (stx-amount (/ (* token-amount u1000000) price))
+            (current-reserve (var-get psm-reserve))
+        )
+        (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
+        (asserts! (> price u0) ERR-INVALID-ORACLE)
+        (asserts! (> token-amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (>= current-reserve stx-amount) ERR-INSUFFICIENT-RESERVE)
+        
+        (try! (burn-tokens tx-sender token-amount))
+        (try! (as-contract (stx-transfer? stx-amount tx-sender tx-sender)))
+        (var-set psm-reserve (- current-reserve stx-amount))
+        (print {action: "swap-synthetic-for-stx", sender: tx-sender, token-amount: token-amount, stx-amount: stx-amount})
+        (ok stx-amount)
     )
 )
