@@ -12,6 +12,9 @@
 (define-constant ERR-LIQUIDATION-THRESHOLD-NOT-MET (err u109))
 (define-constant ERR-NO-REWARDS (err u110))
 (define-constant ERR-INSUFFICIENT-RESERVE (err u111))
+(define-constant ERR-PAUSED (err u112))
+
+(define-data-var contract-paused bool false)
 
 (define-data-var token-name (string-ascii 32) "Synthetic Gold Token")
 (define-data-var token-symbol (string-ascii 10) "sGOLD")
@@ -161,6 +164,19 @@
     )
 )
 
+(define-read-only (is-paused)
+    (var-get contract-paused)
+)
+
+(define-public (set-paused (paused bool))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-OWNER-ONLY)
+        (var-set contract-paused paused)
+        (print {action: "set-paused", paused: paused})
+        (ok true)
+    )
+)
+
 (define-private (mint-tokens (recipient principal) (amount uint))
     (begin
         (map-set token-balances recipient (+ (get-balance recipient) amount))
@@ -187,6 +203,7 @@
             (current-position (default-to {stx-collateral: u0, synthetic-debt: u0, last-update: u0} 
                                           (map-get? collateral-positions tx-sender)))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (> stx-amount u0) ERR-INVALID-AMOUNT)
         (try! (stx-transfer? stx-amount tx-sender (as-contract tx-sender)))
         (map-set collateral-positions tx-sender
@@ -207,6 +224,7 @@
             (max-mintable (calculate-max-synthetic (get stx-collateral current-position)))
             (new-debt (+ (get synthetic-debt current-position) amount))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (asserts! (<= new-debt max-mintable) ERR-INSUFFICIENT-COLLATERAL)
@@ -229,6 +247,7 @@
             (current-position (unwrap! (map-get? collateral-positions tx-sender) ERR-POSITION-NOT-FOUND))
             (current-debt (get synthetic-debt current-position))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (asserts! (<= amount current-debt) ERR-INVALID-AMOUNT)
         
@@ -251,6 +270,7 @@
             (remaining-collateral (- (get stx-collateral current-position) amount))
             (debt (get synthetic-debt current-position))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (asserts! (>= (get stx-collateral current-position) amount) ERR-INSUFFICIENT-BALANCE)
         
@@ -281,6 +301,7 @@
             (user-collateral (get stx-collateral position))
             (liquidator-balance (get-balance tx-sender))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
         (asserts! (is-position-liquidatable user) ERR-LIQUIDATION-THRESHOLD-NOT-MET)
         (asserts! (> debt-to-cover u0) ERR-INVALID-AMOUNT)
@@ -313,6 +334,7 @@
             (accrued-rewards (unwrap! (calculate-accrued-rewards tx-sender) ERR-NO-REWARDS))
             (position (unwrap! (map-get? collateral-positions tx-sender) ERR-POSITION-NOT-FOUND))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (> accrued-rewards u0) ERR-NO-REWARDS)
         (map-set token-balances tx-sender (+ (get-balance tx-sender) accrued-rewards))
         (var-set total-supply (+ (var-get total-supply) accrued-rewards))
@@ -390,6 +412,7 @@
             (price (var-get oracle-price))
             (token-amount (/ (* stx-amount price) u1000000))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
         (asserts! (> price u0) ERR-INVALID-ORACLE)
         (asserts! (> stx-amount u0) ERR-INVALID-AMOUNT)
@@ -409,6 +432,7 @@
             (stx-amount (/ (* token-amount u1000000) price))
             (current-reserve (var-get psm-reserve))
         )
+        (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
         (asserts! (> price u0) ERR-INVALID-ORACLE)
         (asserts! (> token-amount u0) ERR-INVALID-AMOUNT)
