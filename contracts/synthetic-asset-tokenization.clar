@@ -13,6 +13,8 @@
 (define-constant ERR-NO-REWARDS (err u110))
 (define-constant ERR-INSUFFICIENT-RESERVE (err u111))
 (define-constant ERR-PAUSED (err u112))
+(define-constant ERR-INVALID-FEE (err u113))
+(define-constant FEE-BPS-DENOMINATOR u10000)
 
 (define-data-var contract-paused bool false)
 
@@ -30,6 +32,8 @@
 (define-data-var reward-rate-per-block uint u1)
 (define-data-var total-rewards-distributed uint u0)
 (define-data-var psm-reserve uint u0)
+(define-data-var psm-fee-bps uint u0)
+(define-data-var psm-fee-recipient principal contract-owner)
 
 (define-map token-balances principal uint)
 (define-map token-supplies principal uint)
@@ -406,11 +410,39 @@
     (var-get psm-reserve)
 )
 
+(define-read-only (get-psm-fee-config)
+    {
+        fee-bps: (var-get psm-fee-bps),
+        fee-recipient: (var-get psm-fee-recipient)
+    }
+)
+
+(define-public (set-psm-fee-bps (new-fee-bps uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-OWNER-ONLY)
+        (asserts! (<= new-fee-bps FEE-BPS-DENOMINATOR) ERR-INVALID-FEE)
+        (var-set psm-fee-bps new-fee-bps)
+        (ok true)
+    )
+)
+
+(define-public (set-psm-fee-recipient (new-recipient principal))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-OWNER-ONLY)
+        (var-set psm-fee-recipient new-recipient)
+        (ok true)
+    )
+)
+
 (define-public (swap-stx-for-synthetic (stx-amount uint))
     (let
         (
             (price (var-get oracle-price))
-            (token-amount (/ (* stx-amount price) u1000000))
+            (fee-bps (var-get psm-fee-bps))
+            (fee-amount (/ (* stx-amount fee-bps) FEE-BPS-DENOMINATOR))
+            (net-stx-amount (- stx-amount fee-amount))
+            (token-amount (/ (* net-stx-amount price) u1000000))
+            (fee-recipient (var-get psm-fee-recipient))
         )
         (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
@@ -419,8 +451,12 @@
         
         (try! (stx-transfer? stx-amount tx-sender (as-contract tx-sender)))
         (unwrap-panic (mint-tokens tx-sender token-amount))
-        (var-set psm-reserve (+ (var-get psm-reserve) stx-amount))
-        (print {action: "swap-stx-for-synthetic", sender: tx-sender, stx-amount: stx-amount, token-amount: token-amount})
+        (var-set psm-reserve (+ (var-get psm-reserve) net-stx-amount))
+        (if (> fee-amount u0)
+            (try! (as-contract (stx-transfer? fee-amount tx-sender fee-recipient)))
+            true
+        )
+        (print {action: "swap-stx-for-synthetic", sender: tx-sender, stx-amount: stx-amount, token-amount: token-amount, fee-amount: fee-amount, fee-recipient: fee-recipient})
         (ok token-amount)
     )
 )
@@ -430,7 +466,11 @@
         (
             (price (var-get oracle-price))
             (stx-amount (/ (* token-amount u1000000) price))
+            (fee-bps (var-get psm-fee-bps))
+            (fee-amount (/ (* stx-amount fee-bps) FEE-BPS-DENOMINATOR))
+            (net-stx-amount (- stx-amount fee-amount))
             (current-reserve (var-get psm-reserve))
+            (fee-recipient (var-get psm-fee-recipient))
         )
         (asserts! (not (var-get contract-paused)) ERR-PAUSED)
         (asserts! (is-price-fresh) ERR-PRICE-TOO-OLD)
@@ -439,9 +479,13 @@
         (asserts! (>= current-reserve stx-amount) ERR-INSUFFICIENT-RESERVE)
         
         (try! (burn-tokens tx-sender token-amount))
-        (try! (as-contract (stx-transfer? stx-amount tx-sender tx-sender)))
+        (try! (as-contract (stx-transfer? net-stx-amount tx-sender tx-sender)))
+        (if (> fee-amount u0)
+            (try! (as-contract (stx-transfer? fee-amount tx-sender fee-recipient)))
+            true
+        )
         (var-set psm-reserve (- current-reserve stx-amount))
-        (print {action: "swap-synthetic-for-stx", sender: tx-sender, token-amount: token-amount, stx-amount: stx-amount})
-        (ok stx-amount)
+        (print {action: "swap-synthetic-for-stx", sender: tx-sender, token-amount: token-amount, stx-amount: stx-amount, fee-amount: fee-amount, fee-recipient: fee-recipient})
+        (ok net-stx-amount)
     )
 )
